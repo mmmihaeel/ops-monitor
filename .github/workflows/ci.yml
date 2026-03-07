@@ -1,0 +1,66 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - "**"
+  pull_request:
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: ops_monitor
+          POSTGRES_USER: app
+          POSTGRES_PASSWORD: app
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U app -d ops_monitor"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: jdbc:postgresql://localhost:5432/ops_monitor
+      DATABASE_USERNAME: app
+      DATABASE_PASSWORD: app
+      REDIS_HOST: localhost
+      REDIS_PORT: 6379
+      MANAGEMENT_USERNAME: ops_admin
+      MANAGEMENT_PASSWORD: ops_admin_password
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+
+      - name: Validate Docker Compose
+        run: docker compose config > /dev/null
+
+      - name: Make Maven wrapper executable
+        run: chmod +x mvnw
+
+      - name: Format and test
+        run: ./mvnw -B spotless:check test
+
+      - name: Package
+        run: ./mvnw -B -DskipTests package

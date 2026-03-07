@@ -1,0 +1,32 @@
+spring:
+  flyway:
+    clean-disabled: false
+  datasource:
+    url: ${TEST_DATABASE_URL:${DATABASE_URL:jdbc:postgresql://localhost:5437/ops_monitor}}
+    username: ${TEST_DATABASE_USERNAME:${DATABASE_USERNAME:app}}
+    password: ${TEST_DATABASE_PASSWORD:${DATABASE_PASSWORD:app}}
+  data:
+    redis:
+      host: ${TEST_REDIS_HOST:${REDIS_HOST:localhost}}
+      port: ${TEST_REDIS_PORT:${REDIS_PORT:6384}}
+
+ops:
+  monitor:
+    api-auth:
+      viewer-username: test_viewer
+      viewer-password: test_viewer_password
+      operator-username: test_operator
+      operator-password: test_operator_password
+      admin-username: test_admin
+      admin-password: test_admin_password
+    management-auth:
+      username: test_management
+      password: test_management_password
+    cache:
+      global-summary-ttl: 1s
+      service-status-ttl: 1s
+    retry:
+      lock-ttl: 10s
+    status-policy:
+      degraded-latency-threshold-ms: 1200
+      down-latency-threshold-ms: 5000

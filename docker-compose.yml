@@ -1,0 +1,89 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ops_monitor
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: app
+    ports:
+      - "5437:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U app -d ops_monitor"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6384:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  app:
+    build:
+      context: .
+      dockerfile: docker/java/Dockerfile
+    environment:
+      APP_PORT: ${APP_PORT:-3005}
+      DATABASE_URL: ${DATABASE_URL:-jdbc:postgresql://postgres:5432/ops_monitor}
+      DATABASE_USERNAME: ${DATABASE_USERNAME:-app}
+      DATABASE_PASSWORD: ${DATABASE_PASSWORD:-app}
+      REDIS_HOST: ${REDIS_HOST:-redis}
+      REDIS_PORT: ${REDIS_PORT:-6379}
+      MANAGEMENT_USERNAME: ${MANAGEMENT_USERNAME:-ops_management}
+      MANAGEMENT_PASSWORD: ${MANAGEMENT_PASSWORD:-ops_management_password}
+      API_VIEWER_USERNAME: ${API_VIEWER_USERNAME:-ops_viewer}
+      API_VIEWER_PASSWORD: ${API_VIEWER_PASSWORD:-ops_viewer_password}
+      API_OPERATOR_USERNAME: ${API_OPERATOR_USERNAME:-ops_operator}
+      API_OPERATOR_PASSWORD: ${API_OPERATOR_PASSWORD:-ops_operator_password}
+      API_ADMIN_USERNAME: ${API_ADMIN_USERNAME:-ops_admin}
+      API_ADMIN_PASSWORD: ${API_ADMIN_PASSWORD:-ops_admin_password}
+      CACHE_GLOBAL_SUMMARY_TTL: ${CACHE_GLOBAL_SUMMARY_TTL:-30s}
+      CACHE_SERVICE_STATUS_TTL: ${CACHE_SERVICE_STATUS_TTL:-20s}
+      RETRY_LOCK_TTL: ${RETRY_LOCK_TTL:-30s}
+      STATUS_DEGRADED_LATENCY_MS: ${STATUS_DEGRADED_LATENCY_MS:-1200}
+      STATUS_DOWN_LATENCY_MS: ${STATUS_DOWN_LATENCY_MS:-5000}
+    ports:
+      - "3005:3005"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  maven:
+    image: maven:3.9.9-eclipse-temurin-21
+    profiles:
+      - tooling
+    working_dir: /workspace
+    volumes:
+      - ./:/workspace
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-jdbc:postgresql://postgres:5432/ops_monitor}
+      DATABASE_USERNAME: ${DATABASE_USERNAME:-app}
+      DATABASE_PASSWORD: ${DATABASE_PASSWORD:-app}
+      REDIS_HOST: ${REDIS_HOST:-redis}
+      REDIS_PORT: ${REDIS_PORT:-6379}
+      MANAGEMENT_USERNAME: ${MANAGEMENT_USERNAME:-ops_management}
+      MANAGEMENT_PASSWORD: ${MANAGEMENT_PASSWORD:-ops_management_password}
+      API_VIEWER_USERNAME: ${API_VIEWER_USERNAME:-ops_viewer}
+      API_VIEWER_PASSWORD: ${API_VIEWER_PASSWORD:-ops_viewer_password}
+      API_OPERATOR_USERNAME: ${API_OPERATOR_USERNAME:-ops_operator}
+      API_OPERATOR_PASSWORD: ${API_OPERATOR_PASSWORD:-ops_operator_password}
+      API_ADMIN_USERNAME: ${API_ADMIN_USERNAME:-ops_admin}
+      API_ADMIN_PASSWORD: ${API_ADMIN_PASSWORD:-ops_admin_password}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: ["sleep", "infinity"]
+
+volumes:
+  postgres_data:
