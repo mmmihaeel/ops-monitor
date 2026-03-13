@@ -1,142 +1,116 @@
 # Domain Model
 
-## Core Entities
+The domain is centered on operational state and intervention, not just configuration records. Every major table exists to answer one of three questions:
 
-### MonitoredService
+- what is happening right now
+- what changed to get here
+- who performed the sensitive action
 
-Represents a system/service under monitoring.
+Related reading: [README](../README.md), [Architecture](architecture.md), [API Overview](api-overview.md)
 
-Fields:
-- `id` (UUID)
-- `name`
-- `environment`
-- `ownerTeam`
-- `endpointUrl`
-- `currentStatus` (`UP`, `DEGRADED`, `DOWN`, `UNKNOWN`)
-- `lastSnapshotAt`
-- `createdAt`, `updatedAt`
+## Core Aggregates
 
-### HealthSnapshot
+| Entity | Role in the system | Key fields | Notes |
+| --- | --- | --- | --- |
+| `MonitoredService` | Registry entry and current operational posture for a service | `name`, `environment`, `ownerTeam`, `endpointUrl`, `currentStatus`, `lastSnapshotAt` | Holds the current derived state used by summary and drill-down endpoints |
+| `HealthSnapshot` | Point-in-time health input | `status`, `latencyMs`, `errorMessage`, `source`, `recordedAt` | Stores the effective derived status, not only the reported input |
+| `ServiceStatusHistory` | Append-only service transition log | `previousStatus`, `newStatus`, `reason`, `changedAt` | Written only when a service actually changes state |
+| `FailedJob` | Durable failed-work item awaiting review or retry | `externalJobId`, `jobType`, `state`, `retryCount`, `maxRetries`, `lastFailureAt`, `nextRetryAt` | Encodes retry budget and current recovery posture |
+| `RetryAttempt` | Immutable trace of each retry command | `attemptNumber`, `requestedBy`, `outcome`, `message`, `triggeredAt` | Preserves operator intent and result per attempt |
+| `IncidentNote` | Operational incident record tied to a service or failed job | `severity`, `status`, `title`, `note`, `author`, `acknowledgedBy`, `resolvedBy` | Represents both context capture and lifecycle tracking |
+| `AuditEntry` | Queryable audit trail for sensitive actions | `entityType`, `entityId`, `action`, `actor`, `detailsJson`, `createdAt` | Used for forensic review and reviewer-facing accountability |
 
-Point-in-time health signal for a service.
+## Relationship View
 
-Fields:
-- `id` (UUID)
-- `serviceId`
-- `status` (effective status after policy derivation)
-- `latencyMs`
-- `errorMessage`
-- `source` (`API`, `MANUAL`, `PROBE`)
-- `recordedAt`
+```mermaid
+flowchart LR
+    Service["MonitoredService"] --> Snapshot["HealthSnapshot"]
+    Service --> History["ServiceStatusHistory"]
+    Service --> Failed["FailedJob"]
+    Failed --> Attempt["RetryAttempt"]
+    Service --> Incident["IncidentNote"]
+    Failed --> Incident
+    Service -. audited .-> Audit["AuditEntry"]
+    Snapshot -. audited .-> Audit
+    Failed -. audited .-> Audit
+    Incident -. audited .-> Audit
+```
 
-Policy notes:
-- effective status starts from reported status
-- error message can escalate to at least `DEGRADED`
-- latency thresholds can escalate to `DEGRADED` or `DOWN`
+## Service Status Derivation
 
-### ServiceStatusHistory
+Service state is driven by snapshots and a small policy object, not by manual writes to the service table.
 
-Status transition log for monitored services.
+| Input signal | Policy effect | Why it matters |
+| --- | --- | --- |
+| Reported status | Establishes the baseline derived state | Allows upstream systems or operators to report direct status |
+| Non-blank `errorMessage` | Raises status to at least `DEGRADED` | Captures partial failure even if the reported status was optimistic |
+| `latencyMs >= 1200` | Raises status to at least `DEGRADED` | Models slow-but-serving behavior |
+| `latencyMs >= 5000` | Raises status to `DOWN` | Models hard operational degradation from latency alone |
+| Derived status differs from `MonitoredService.currentStatus` | Persists a `ServiceStatusHistory` row and emits a status-change audit event | Preserves the transition timeline without duplicating unchanged state |
 
-Fields:
-- `id` (bigint)
-- `serviceId`
-- `previousStatus`
-- `newStatus`
-- `reason`
-- `changedAt`
+The service table therefore acts as a current read model, while `HealthSnapshot` and `ServiceStatusHistory` preserve supporting evidence.
 
-Rows are written only when status changes.
+## Failed-Job State Model
 
-### FailedJob
+`FailedJob` is the repository's recovery-focused aggregate. It starts from failure, carries a retry budget, and advances only when an operator invokes retry.
 
-Operational record for background job failures.
+```mermaid
+stateDiagram-v2
+    [*] --> FAILED
+    FAILED --> RETRY_IN_PROGRESS: retry requested
+    RETRY_SCHEDULED --> RETRY_IN_PROGRESS: retry requested again
+    RETRY_IN_PROGRESS --> RECOVERED: outcome SUCCESS
+    RETRY_IN_PROGRESS --> RETRY_SCHEDULED: outcome FAILED and retries remain
+    RETRY_IN_PROGRESS --> EXHAUSTED: outcome FAILED at max retries
+```
 
-Fields:
-- `id` (UUID)
-- `serviceId`
-- `externalJobId`
-- `jobType`
-- `state` (`FAILED`, `RETRY_IN_PROGRESS`, `RETRY_SCHEDULED`, `RECOVERED`, `EXHAUSTED`)
-- `failureReason`
-- `payload`
-- `retryCount`
-- `maxRetries`
-- `lastFailureAt`
-- `nextRetryAt`
-- `createdAt`, `updatedAt`
+Important modeled behavior:
 
-Retryability is state- and max-retry-aware.
+- `retryCount < maxRetries` is required for retryability
+- `RECOVERED` and `EXHAUSTED` are terminal from the API's point of view
+- `nextRetryAt` is advisory scheduling metadata, not a worker queue contract
+- retry attempts are immutable even though the failed-job record changes over time
 
-### RetryAttempt
+## Incident Lifecycle
 
-Immutable trace for each retry command.
+Incidents are intentionally compact but lifecycle-aware.
 
-Fields:
-- `id` (UUID)
-- `failedJobId`
-- `attemptNumber`
-- `requestedBy`
-- `outcome` (`SUCCESS`, `FAILED`, `SKIPPED`)
-- `message`
-- `triggeredAt`
+```mermaid
+stateDiagram-v2
+    [*] --> OPEN
+    OPEN --> ACKNOWLEDGED: acknowledge
+    ACKNOWLEDGED --> RESOLVED: resolve
+```
 
-### IncidentNote
+Key constraints:
 
-Operational incident context linked to service and/or failed job.
+- at least one of `serviceId` or `failedJobId` must be present
+- if both are present, the failed job must belong to the provided service
+- only `OPEN` incidents may be acknowledged
+- only `ACKNOWLEDGED` incidents may be resolved
 
-Fields:
-- `id` (UUID)
-- `serviceId` (nullable)
-- `failedJobId` (nullable)
-- `severity` (`INFO`, `WARNING`, `CRITICAL`)
-- `status` (`OPEN`, `ACKNOWLEDGED`, `RESOLVED`)
-- `title`
-- `note`
-- `author`
-- `acknowledgedAt`, `acknowledgedBy`
-- `resolvedAt`, `resolvedBy`
-- `createdAt`
+This design is enough to demonstrate incident accountability without expanding into assignment, escalation, or paging policies.
 
-Constraints:
-- at least one of `serviceId` or `failedJobId` is required
-- lifecycle transitions are constrained by service logic:
-  - `OPEN -> ACKNOWLEDGED`
-  - `ACKNOWLEDGED -> RESOLVED`
+## Audit Model
 
-### AuditEntry
+`AuditEntry` is intentionally generic so every sensitive workflow can record a durable event without creating a new audit table per feature.
 
-Queryable audit event for sensitive actions.
+| Audit action | Typical trigger |
+| --- | --- |
+| `SERVICE_CREATED` | admin registers a new monitored service |
+| `HEALTH_SNAPSHOT_RECORDED` | operator submits a snapshot |
+| `SERVICE_STATUS_CHANGED` | snapshot changes effective service state |
+| `FAILED_JOB_RETRY_REQUESTED` | operator triggers a retry |
+| `INCIDENT_NOTE_CREATED` | operator opens an incident |
+| `INCIDENT_ACKNOWLEDGED` | operator acknowledges an incident |
+| `INCIDENT_RESOLVED` | operator resolves an incident |
 
-Fields:
-- `id` (bigint)
-- `entityType`
-- `entityId`
-- `action`
-- `actor`
-- `detailsJson`
-- `createdAt`
+Audit rows store actor identity and JSON details so reviewers can understand not only that a transition occurred, but the operational context around it.
 
-Key actions:
-- `SERVICE_CREATED`
-- `HEALTH_SNAPSHOT_RECORDED`
-- `SERVICE_STATUS_CHANGED`
-- `FAILED_JOB_RETRY_REQUESTED`
-- `INCIDENT_NOTE_CREATED`
-- `INCIDENT_ACKNOWLEDGED`
-- `INCIDENT_RESOLVED`
+## Reviewer Notes
 
-## Relationships
+Three modeling choices give the repository most of its signal:
 
-- One `MonitoredService` has many `HealthSnapshot`
-- One `MonitoredService` has many `ServiceStatusHistory`
-- One `MonitoredService` has many `FailedJob`
-- One `FailedJob` has many `RetryAttempt`
-- One `IncidentNote` can reference a `MonitoredService`, a `FailedJob`, or both
-
-## State Behavior Summary
-
-- Snapshot ingestion updates current service status and optionally appends status-history rows.
-- Retry commands move failed jobs through retry/recovery states and persist attempts.
-- Incident lifecycle transitions are explicit and audited.
-- Audit entries provide an immutable timeline for sensitive operator activity.
+- current state and historical evidence are separated cleanly
+- retry is treated as a state machine with guardrails, not a boolean flag
+- auditability is attached to workflow transitions instead of being added later

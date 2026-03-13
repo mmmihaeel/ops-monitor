@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 640" role="img" aria-labelledby="title desc">
+  <title id="title">ops-monitor hero placeholder</title>
+  <desc id="desc">Minimal placeholder graphic for the ops-monitor README hero section.</desc>
+  <rect width="1280" height="640" fill="#11161d"/>
+  <rect x="80" y="80" width="1120" height="480" rx="24" fill="#161d26" stroke="#2f3b4b" stroke-width="2"/>
+  <text x="640" y="320" fill="#dbe4ee" font-family="Segoe UI, Helvetica Neue, Arial, sans-serif" font-size="34" text-anchor="middle" dominant-baseline="middle">ops-monitor / hero placeholder</text>
+</svg>
